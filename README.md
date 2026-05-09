@@ -15,11 +15,27 @@ When you invoke `/autoskill`, it:
 
 ## Install
 
+**Option 1 — ClaWHub (recommended)**
+
+Search for `autoskill` on [clawhub.io](https://clawhub.io) and click Install. ClaWHub handles copying the skill files into `~/.claude/` automatically.
+
+**Option 2 — Manual**
+
 ```bash
 bash autoskill/install.sh
 ```
 
 Then restart Claude Code (or start a new session).
+
+## Adding skills in Claude Code and Cursor
+
+**Claude Code (CLI / desktop app)**
+
+Drop a `SKILL.md` file into `~/.claude/skills/<skill-name>/` and a corresponding `.md` command file into `~/.claude/commands/`. Restart the session — the skill appears in `/` autocomplete automatically.
+
+**Cursor**
+
+Cursor does not have a native skill system. To use autoskill inside Cursor, add the contents of `SKILL.md` as a custom rule in **Cursor Settings → Rules for AI**, or paste it into a `.cursorrules` file at your project root. Invoke it by asking Claude: "follow the autoskill workflow for: [your problem]".
 
 ## Usage
 
