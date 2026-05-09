@@ -1,6 +1,6 @@
 # autoskill
 
-[![ClawHub](https://img.shields.io/badge/clawhub-autoskill%401.1.0-blue)](https://github.com/Science-Prof-Robot/autoskill)
+[![ClawHub](https://img.shields.io/badge/clawhub-autoskill%401.1.1-blue)](https://github.com/Science-Prof-Robot/autoskill)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **The skill you invoke when you don't know which skill to invoke.**
@@ -38,12 +38,12 @@ Scores every candidate skill 0–100 using a weighted rubric:
 | Stack match | 15% | Does the skill target your detected language or framework? |
 
 **Score thresholds:**
-- **≥ 70** — auto-applied, no confirmation needed
-- **40–69** — suggested, you decide
+- **≥ 70** — recommended, shown in the execution plan
+- **40–69** — suggested, you decide whether to include
 - **< 40** — skipped silently
 
-### Phase 4 — User Confirmation
-If any skills scored 40–69, autoskill pauses and asks which you want to add to the run. High-confidence matches (≥70) proceed without interruption, up to a max of 5.
+### Phase 4 — Execution Preview and Mandatory Confirmation
+**Every run** shows the full proposed execution plan and asks for your explicit approval before invoking anything. There are no exceptions — even a single recommended skill requires confirmation. You can remove any skill from the queue before proceeding.
 
 ### Phase 5 — Skill Execution
 Runs approved skills one at a time in score order. Each skill may change project state that the next one depends on, so execution is always sequential. Blocked or context-starved skills are noted but don't abort the rest.
@@ -103,15 +103,33 @@ Found 12 candidate skills in relevant buckets.
 
 SKILL SCORING
 ──────────────────────────────────────────────────────────────
-Skill               Score  Tier        Reason
-─────────────────── ─────  ──────────  ──────────────────────
-security-review     88     AUTO-APPLY  fix intent + security domain + keyword=auth
-investigate         82     AUTO-APPLY  fix intent + keyword=crash
-typescript-reviewer 75     AUTO-APPLY  stack=typescript, code-quality domain
-code-review         72     AUTO-APPLY  review intent match
-tdd-workflow        48     SUGGEST     testing domain, weak intent match
+Skill               Score  Tier         Reason
+─────────────────── ─────  ───────────  ──────────────────────
+security-review     88     RECOMMENDED  fix intent + security domain + keyword=auth
+investigate         82     RECOMMENDED  fix intent + keyword=crash
+typescript-reviewer 75     RECOMMENDED  stack=typescript, code-quality domain
+code-review         72     RECOMMENDED  review intent match
+tdd-workflow        48     SUGGEST      testing domain, weak intent match
 ──────────────────────────────────────────────────────────────
-AUTO-APPLY: 4 skills | SUGGEST: 1 skill | SKIP: 7 skills
+RECOMMENDED: 4 skills | SUGGEST: 1 skill | SKIP: 7 skills
+
+** autoskill recommends 4 skills for: "Fix login crash when password field is empty" **
+
+These skills will run only after you confirm below:
+
+Recommended (score ≥70):
+- `security-review` — fix intent + security domain
+- `investigate` — fix intent + keyword=crash
+- `typescript-reviewer` — stack=typescript
+- `code-review` — review intent match
+
+Also applicable — want any of these?
+- `tdd-workflow` [SUGGEST] — testing domain, weak intent match
+
+Actions:
+- Type the names of any suggested skills you want to add
+- Type "none" to run only the recommended skills
+- Type "cancel" to stop and do nothing
 
 → Applying `security-review` (score: 88) — fix intent + security domain
 
@@ -123,13 +141,13 @@ AUTO-APPLY: 4 skills | SUGGEST: 1 skill | SKIP: 7 skills
 
 ## autoskill Run Complete
 
-| Skill              | Score | Applied   | Outcome   | Reason                          |
-|--------------------|-------|-----------|-----------|----------------------------------|
-| security-review    | 88    | ✅ Auto   | completed | fix intent + security domain     |
-| investigate        | 82    | ✅ Auto   | completed | fix intent + keyword=crash       |
-| typescript-reviewer| 75    | ✅ Auto   | completed | stack=typescript                 |
-| code-review        | 72    | ✅ Auto   | completed | review intent match              |
-| tdd-workflow       | 48    | ⏸ User   | skipped   | user declined                    |
+| Skill              | Score | Tier        | Applied | Outcome   | Reason                          |
+|--------------------|-------|-------------|---------|-----------|----------------------------------|
+| security-review    | 88    | RECOMMENDED | ✅      | completed | fix intent + security domain     |
+| investigate        | 82    | RECOMMENDED | ✅      | completed | fix intent + keyword=crash       |
+| typescript-reviewer| 75    | RECOMMENDED | ✅      | completed | stack=typescript                 |
+| code-review        | 72    | RECOMMENDED | ✅      | completed | review intent match              |
+| tdd-workflow       | 48    | SUGGEST     | ⏸       | skipped   | user declined                    |
 
 Summary: 4 skills applied, 1 skipped, 0 blocked.
 ```
@@ -140,9 +158,9 @@ Summary: 4 skills applied, 1 skipped, 0 blocked.
 
 autoskill is designed to route to other skills automatically. Before installing, be aware of how it handles high-impact actions:
 
-**High-risk skill gate.** Skills that deploy, send messages, modify data, or charge accounts (e.g. `ship`, `database-migrations`, `customer-billing-ops`, `github-ops`, `email-ops`) are **never auto-applied** — they always appear in the confirmation step regardless of their score, marked `[HIGH-RISK]`.
+**Mandatory execution preview.** Every single run shows the full proposed execution plan and asks for your explicit confirmation before invoking anything. There are no exceptions — even one recommended skill requires approval. You can remove any skill from the queue at that point, or type `cancel` to abort entirely.
 
-**Execution preview.** When more than one skill will run, autoskill shows you the full proposed execution plan and asks for approval before invoking anything. You can remove any skill from the queue at that point.
+**High-risk skill gate.** Skills that deploy, send messages, modify data, charge accounts, or access broad shell/file scope (e.g. `ship`, `database-migrations`, `customer-billing-ops`, `github-ops`, `email-ops`) are **never automatically included** — they always appear as optional suggestions marked `[HIGH-RISK]`, regardless of their score. A keyword heuristic also catches newly added skills with dangerous descriptions even if they are not in the fixed registry.
 
 **Preamble transparency.** The Bash preamble that runs at startup only inspects local git state and project config files (`package.json`, `go.mod`, etc.). It does not modify files, run project code, or send data externally.
 
