@@ -1,7 +1,10 @@
 ---
 name: autoskill
 preamble-tier: 2
-version: 1.0.0
+version: 1.1.0
+author: Science-Prof-Robot
+homepage: https://github.com/Science-Prof-Robot/autoskill
+license: MIT
 description: |
   Intelligent skill router. Analyzes the current problem statement and context,
   scores all available skills for applicability, and automatically invokes the
@@ -31,6 +34,10 @@ allowed-tools:
 
 ## Preamble (run first)
 
+The commands below inspect local git state and detect the project language from
+config files. They do not modify anything, send data externally, or run project
+code. They are safe to run in any local workspace.
+
 ```bash
 _BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "no-git")
 echo "BRANCH: $_BRANCH"
@@ -47,6 +54,36 @@ _GIT_CHANGES=$(git status --short 2>/dev/null | head -20 || echo "")
 echo "GIT_CHANGES: $(echo "$_GIT_CHANGES" | wc -l | tr -d ' ') files"
 echo "CHANGED_EXTS: $(echo "$_GIT_CHANGES" | grep -oE '\.[a-zA-Z]+$' | sort -u | tr '\n' ',' 2>/dev/null || echo 'none')"
 ```
+
+## High-Risk Skill Registry
+
+The following skills perform irreversible or externally-visible actions (deploys,
+payments, account changes, external messages, data mutations). They are **always
+treated as SUGGEST-tier regardless of their score** — they will never auto-apply
+and always require explicit user confirmation before running.
+
+```
+HIGH_RISK_SKILLS = [
+  # Deployment / release
+  ship, land-and-deploy, canary, deploy, setup-deploy, prp-pr,
+
+  # Payment / billing
+  customer-billing-ops, finance-billing-ops, agent-payment-x402,
+
+  # Data mutations
+  database-migrations,
+
+  # External communications
+  github-ops, x-api, email-ops, messages-ops, unified-notifications-ops,
+
+  # Account / enterprise operations
+  enterprise-agent-ops, investor-outreach,
+]
+```
+
+When scoring (Phase 3), check each candidate against this list. If it matches,
+force its tier to SUGGEST and add a `[HIGH-RISK]` label in the scoring table,
+regardless of its numeric score.
 
 ## Phase 1 — Problem Extraction
 
@@ -133,6 +170,9 @@ For each candidate skill, score 0–100 using this rubric:
 - **40–69** → Suggest (present to user in a batch question)
 - **< 40** → Skip silently
 
+**High-risk override:** If a skill appears in the HIGH_RISK_SKILLS registry above,
+force it to SUGGEST tier and mark it `[HIGH-RISK]` in the table, regardless of score.
+
 **Constraint: max 5 auto-apply skills per invocation.** If more than 5 score ≥70, take the top 5 by score.
 
 Print the scoring table (show only skills scoring ≥ 30):
@@ -140,36 +180,56 @@ Print the scoring table (show only skills scoring ≥ 30):
 ```
 SKILL SCORING
 ─────────────────────────────────────────────────────────────────
-Skill                  Score  Tier        Reason
-─────────────────────── ─────  ──────────  ─────────────────────
-tdd-workflow           88     AUTO-APPLY  intent=create, domain=testing, keyword=test
-security-review        82     AUTO-APPLY  intent=fix, domain=security, keyword=auth
-typescript-reviewer    75     AUTO-APPLY  stack=typescript, domain=code-quality
-code-review            72     AUTO-APPLY  intent=review match
-database-reviewer      55     SUGGEST     domain=database, weak intent match
-...
-seo                    8      SKIP        no frontend/content signals
+Skill                  Score  Tier             Reason
+─────────────────────── ─────  ──────────────   ─────────────────────
+tdd-workflow           88     AUTO-APPLY       intent=create, domain=testing, keyword=test
+security-review        82     AUTO-APPLY       intent=fix, domain=security, keyword=auth
+typescript-reviewer    75     AUTO-APPLY       stack=typescript, domain=code-quality
+code-review            72     AUTO-APPLY       intent=review match
+database-reviewer      55     SUGGEST          domain=database, weak intent match
+ship                   71     SUGGEST [HIGH-RISK]  score≥70 but forced to SUGGEST — deployment skill
+seo                    8      SKIP             no frontend/content signals
 ─────────────────────────────────────────────────────────────────
-AUTO-APPLY: N skills | SUGGEST: M skills | SKIP: K skills
+AUTO-APPLY: N skills | SUGGEST: M skills (K high-risk) | SKIP: K skills
 ```
 
-## Phase 4 — User Confirmation (for SUGGEST tier only)
+## Phase 4 — Execution Preview and User Confirmation
 
-If there are any SUGGEST-tier skills (score 40–69):
+**This phase always runs before any skill is invoked**, even if there are no SUGGEST-tier skills.
 
-Use **AskUserQuestion** with this format:
+### Step 4a — Show the execution plan
 
-> **autoskill found [N] skills to auto-apply and [M] to suggest.**
+Print the full proposed run as a preview. Do not invoke anything yet:
+
+```
+EXECUTION PLAN
+──────────────────────────────────────────────────
+ #  Skill                Tier        Score  Why
+──  ─────────────────── ──────────  ─────  ─────────────────────────
+ 1  security-review      AUTO        88     fix intent + security domain
+ 2  investigate          AUTO        82     fix intent + keyword=crash
+ 3  typescript-reviewer  AUTO        75     stack=typescript
+ 4  code-review          AUTO        72     review intent match
+ 5  ship                 HIGH-RISK   71     deployment — requires confirmation
+──────────────────────────────────────────────────
+```
+
+### Step 4b — Confirmation gate
+
+**If the plan contains only 1 AUTO-APPLY skill and no SUGGEST or HIGH-RISK skills:**
+Skip the confirmation question and proceed directly to Phase 5.
+
+**In all other cases**, use **AskUserQuestion** with this format:
+
+> **autoskill is ready to run [N] skills.**
 >
-> Auto-applying (score ≥70): [list]
+> Auto-applying: [list — these will run without further prompts]
+> Needs your approval:
+> - `skill-name` [SUGGEST] — [reason it might apply]
+> - `skill-name` [HIGH-RISK] — [why it needs confirmation]
 >
-> Also applicable (score 40–69) — want any of these?
-> - `skill-name` — [one-line reason it might apply]
-> - `skill-name` — [one-line reason it might apply]
->
-> Which would you like to add to the run? (Enter names, "all", or "none")
-
-If there are NO suggest-tier skills, skip this step and proceed directly to Phase 5.
+> Which of the suggested/high-risk skills do you want to include?
+> (Select any, "all", or "none" — auto-apply skills will run regardless)
 
 Add any user-selected skills to the execution queue before continuing.
 
@@ -178,8 +238,8 @@ Add any user-selected skills to the execution queue before continuing.
 **Goal:** Apply each queued skill in order.
 
 **Execution order:**
-1. Sort auto-apply skills by score descending
-2. User-selected suggest-tier skills append at the end
+1. AUTO-APPLY skills sorted by score descending
+2. User-approved SUGGEST / HIGH-RISK skills appended at the end
 
 **For each skill in the queue:**
 
@@ -214,12 +274,13 @@ After all skills have run (or been skipped), print the final report:
 **Problem:** [problem statement]
 **Intent:** [action intent] | **Stack:** [stack] | **Domains:** [domains]
 
-| Skill | Score | Applied | Outcome | Reason |
-|-------|-------|---------|---------|--------|
-| tdd-workflow | 88 | ✅ Auto | completed | create intent + testing domain |
-| security-review | 82 | ✅ Auto | completed | fix intent + security domain |
-| database-reviewer | 55 | ⏸ User | completed | user added from suggest list |
-| seo | 8 | ❌ Skip | — | no frontend signals |
+| Skill | Score | Tier | Applied | Outcome | Reason |
+|-------|-------|------|---------|---------|--------|
+| tdd-workflow | 88 | AUTO | ✅ | completed | create intent + testing domain |
+| security-review | 82 | AUTO | ✅ | completed | fix intent + security domain |
+| ship | 71 | HIGH-RISK | ⏸ User | skipped | user declined |
+| database-reviewer | 55 | SUGGEST | ⏸ User | completed | user approved |
+| seo | 8 | SKIP | ❌ | — | no frontend signals |
 
 **Summary:** [N] skills applied, [M] skipped, [K] blocked.
 ```
@@ -236,6 +297,8 @@ Report final status as one of:
 
 - **Never bulk-read skill files.** The system-reminder list is sufficient for scoring. Only read a specific SKILL.md file if you need to understand invocation details for an edge case.
 - **Never hardcode skill assumptions.** Always derive the candidate list from the live system-reminder. New skills added to the system are automatically included.
+- **High-risk skills always require confirmation.** Skills that deploy, send messages, modify data, or charge accounts are never auto-applied — they are always presented for explicit user approval.
+- **Show the plan before executing.** The execution preview in Phase 4 ensures the user always sees what will run before any skill is invoked (except for single-skill low-risk runs).
 - **Graceful degradation.** If the Skill tool is unavailable, print the scored table and explain which skills the user should invoke manually.
 - **Max 5 auto-applied skills.** Prevents runaway chaining on broad problem statements.
 - **Sequential execution.** Skills run one at a time, in score order. Never parallel — each skill may change project state that the next skill depends on.

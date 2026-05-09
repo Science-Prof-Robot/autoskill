@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Install autoskill into ~/.claude/skills/ and ~/.claude/commands/
+#
+# To uninstall:
+#   rm -rf ~/.claude/skills/autoskill
+#   rm -f  ~/.claude/commands/autoskill.md
+#
 set -e
 
 SKILL_DIR="$HOME/.claude/skills/autoskill"

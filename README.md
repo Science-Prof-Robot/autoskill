@@ -1,5 +1,8 @@
 # autoskill
 
+[![ClawHub](https://img.shields.io/badge/clawhub-autoskill%401.1.0-blue)](https://github.com/Science-Prof-Robot/autoskill)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **The skill you invoke when you don't know which skill to invoke.**
 
 `autoskill` is a meta-skill for Claude Code that acts as an intelligent router. Instead of memorizing which specialized skill handles which kind of task, you describe your problem and autoskill figures out the right skills to apply — scoring every available skill, auto-applying the best matches, and letting you approve borderline ones.
@@ -61,6 +64,13 @@ Restart Claude Code (or start a new session) to pick up `/autoskill`.
 After install:
 - Skill definition → `~/.claude/skills/autoskill/SKILL.md`
 - Slash command → `~/.claude/commands/autoskill.md`
+
+### Uninstall
+
+```bash
+rm -rf ~/.claude/skills/autoskill
+rm -f  ~/.claude/commands/autoskill.md
+```
 
 ---
 
@@ -125,6 +135,18 @@ Summary: 4 skills applied, 1 skipped, 0 blocked.
 ```
 
 ---
+
+## Security and safe use
+
+autoskill is designed to route to other skills automatically. Before installing, be aware of how it handles high-impact actions:
+
+**High-risk skill gate.** Skills that deploy, send messages, modify data, or charge accounts (e.g. `ship`, `database-migrations`, `customer-billing-ops`, `github-ops`, `email-ops`) are **never auto-applied** — they always appear in the confirmation step regardless of their score, marked `[HIGH-RISK]`.
+
+**Execution preview.** When more than one skill will run, autoskill shows you the full proposed execution plan and asks for approval before invoking anything. You can remove any skill from the queue at that point.
+
+**Preamble transparency.** The Bash preamble that runs at startup only inspects local git state and project config files (`package.json`, `go.mod`, etc.). It does not modify files, run project code, or send data externally.
+
+**Persistent install.** The installer adds a skill and slash command to `~/.claude/`. They remain available in future sessions until you uninstall them (see Uninstall above).
 
 ## Design principles
 
