@@ -55,6 +55,26 @@ Prints a full table showing every skill that was considered, its score, whether 
 
 ## Install
 
+### Quick install (natural language)
+
+**Claude Code**
+```
+/install autoskill
+```
+
+**Cursor**
+```
+@autoskill
+```
+Or open Cursor Settings → MCP / Skills → Add Skill → search `autoskill`.
+
+**OpenClaw**
+```bash
+npx clawhub@latest install autoskill
+```
+
+### Manual install (any environment)
+
 ```bash
 bash autoskill/install.sh
 ```
