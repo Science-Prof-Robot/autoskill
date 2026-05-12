@@ -1,18 +1,23 @@
 ---
 name: autoskill
 preamble-tier: 2
-version: 1.1.1
+version: 1.2.0
 author: Science-Prof-Robot
 homepage: https://github.com/Science-Prof-Robot/autoskill
 license: MIT
 description: |
-  Intelligent skill router. Analyzes the current problem statement and context,
-  scores all available skills for applicability, and recommends the most relevant
-  ones in priority order. **No skill is ever invoked without your explicit approval.**
+  Intelligent skill and MCP-tool router. Analyzes the current problem statement
+  and context, scores all available Skills **and** MCP tools for applicability,
+  and recommends the most relevant ones in priority order. **Nothing is ever
+  invoked without your explicit approval.**
+
+  Also scores and routes MCP tools attached to the session (Signoz, Slack,
+  Gmail, Calendar, Drive, Jenkins, context7, etc.) using the same rubric and
+  the same mandatory confirmation gate.
 
   Use when you want Claude to automatically identify and recommend the right
-  skills without manually choosing them. Great for complex tasks where the right set
-  of skills is non-obvious.
+  skills and MCP tools without manually choosing them. Great for complex tasks
+  where the right set of capabilities is non-obvious.
 
   Invocation:
     /autoskill [problem description]
@@ -30,6 +35,8 @@ allowed-tools:
   - Grep
   - AskUserQuestion
   - Skill
+  - ToolSearch
+  - mcp__*
 ---
 
 ## Preamble (run first)
@@ -95,6 +102,52 @@ When scoring (Phase 3), check each candidate against this registry and the
 heuristic. If it matches, force its tier to SUGGEST and add a `[HIGH-RISK]`
 label in the scoring table, regardless of its numeric score.
 
+## High-Risk MCP Tool Registry
+
+MCP tools can have external side effects — sending Slack messages, drafting
+emails, creating calendar events, modifying Drive files, authenticating
+against third-party providers, or mutating remote state. The following name
+patterns are **always treated as SUGGEST-tier** — they will never be
+recommended for automatic inclusion and always require individual user
+confirmation before running.
+
+```
+HIGH_RISK_MCP_PATTERNS = [
+  # External communications
+  *__slack_send_*, *__slack_schedule_*, *__slack_update_*, *__slack_create_*,
+  *__send_message*, *__send_email*, *__send_*_to_slack,
+  *__create_draft, *__label_*, *__unlabel_*,
+  *__create_label, *__delete_label, *__update_label,
+
+  # Calendar / scheduling
+  *__create_event, *__update_event, *__delete_event, *__respond_to_event,
+
+  # File system / drive writes
+  *__create_file, *__copy_file, *__download_file_content,
+  *__update_canvas, *__create_canvas,
+
+  # Auth / credential flows
+  *__authenticate, *__complete_authentication,
+
+  # Mutating ops on external systems
+  *__reset_*, *__delete_*, *__update_*, *__create_*,
+  *__charge_*, *__capture_*, *__refund_*, *__export_*,
+]
+```
+
+**Heuristic:** any MCP tool whose suffix verb is one of `send`, `create`,
+`update`, `delete`, `write`, `post`, `publish`, `authenticate`, `charge`,
+`refund`, `reset`, `export`, `schedule`, `draft`, or `upload` is forced to
+SUGGEST tier and tagged `[HIGH-RISK]`, regardless of numeric score.
+
+Read-verbs (`get`, `list`, `search`, `query`, `read`, `aggregate`, `fetch`,
+`resolve`, `suggest`) are **not** gated — they may be auto-recommended on
+their own merits.
+
+When scoring (Phase 3), check each MCP candidate against this registry and
+the heuristic alongside the skill registry. The same `[HIGH-RISK]` label and
+tier override apply.
+
 ## Phase 1 — Problem Extraction
 
 **Goal:** Build a structured context profile from the arguments and project state.
@@ -130,11 +183,20 @@ Domains:  [comma-separated domain tags]
 Keywords: [comma-separated keywords]
 ```
 
-## Phase 2 — Skill Inventory Scan
+## Phase 2 — Inventory Scan (Skills + MCP Tools)
 
-**Goal:** Build a candidate list from the available skills.
+**Goal:** Build two candidate lists — one for available Skills, one for
+available MCP tools.
 
-The full skill list is already loaded in your context (from the system-reminder's "The following skills are available" section). You do NOT need to read files — use the in-context list directly.
+Both inventories come from in-context system-reminders. You do NOT need to
+read files or probe with `ToolSearch` during this phase — schemas only load
+on demand in Phase 5.
+
+### 2a. Skill inventory
+
+The full skill list is already loaded in your context (from the
+system-reminder's "The following skills are available" section). Use the
+in-context list directly.
 
 **Steps:**
 
@@ -160,134 +222,253 @@ The full skill list is already loaded in your context (from the system-reminder'
 
 3. Build a flat candidate list: every skill that appears in at least one domain bucket relevant to the context profile's `Domain tags`.
 
-Print the candidate count: `Found N candidate skills in relevant buckets.`
+### 2b. MCP tool inventory
+
+The deferred-tools list is also already loaded in your context (from the
+system-reminder that says "The following deferred tools are now available
+via ToolSearch"). Extract every name starting with `mcp__`.
+
+**Steps:**
+
+1. For each name `mcp__<server>__<tool>`, parse the **server** segment
+   (between the first and second `__`) and the **tool** segment (everything
+   after). E.g. `mcp__claude_ai_Signoz__search_logs` → server
+   `claude_ai_Signoz`, tool `search_logs`.
+
+2. Group MCP tools by server, then map each server to one or more domain
+   buckets using this table:
+
+| MCP server pattern | Bucket(s) |
+|--------------------|-----------|
+| `*Slack*` | communication |
+| `*Gmail*`, `*Email*` | communication |
+| `*Calendar*` | scheduling |
+| `*Drive*`, `*Sheets*`, `*Docs*` | documentation, data |
+| `*Signoz*`, `*Grafana*`, `*Datadog*` | observability, infrastructure |
+| `*Jenkins*`, `*argocd*` | deployment, infrastructure |
+| `*Atlassian*`, `*Jira*`, `*Linear*` | planning |
+| `*HubSpot*`, `*Salesforce*` | crm |
+| `*context7*` | documentation, planning |
+| `*Supabase*`, `*Postgres*`, `*Mongo*` | database |
+| `*Vercel*`, `*AWS*`, `*Azure*` | deployment, infrastructure |
+| `*Meta_ADS*`, `*Google_Ads*` | marketing |
+| `*Zapier*` | automation |
+
+   A tool's effective domain set = its server's bucket(s) ∪ any keywords
+   inferred from the tool-name suffix (e.g. `*_logs*` → observability,
+   `*_alert*` → observability, `*_pr*` → deployment, `*_file*` →
+   documentation).
+
+3. Build a flat MCP candidate list: every tool whose effective domain set
+   intersects the context profile's `Domain tags`.
+
+### Inventory output
+
+Print one combined line summarizing both counts:
+
+```
+Found N candidate skills and M candidate MCP tools in relevant buckets.
+```
 
 ## Phase 3 — Relevance Scoring
 
-**Goal:** Score every candidate skill and decide what to recommend, suggest, or skip.
+**Goal:** Score every candidate Skill and every candidate MCP tool, then
+decide what to recommend, suggest, or skip.
 
-For each candidate skill, score 0–100 using this rubric:
+For each candidate, score 0–100 using this rubric:
 
 | Criterion | Weight | How to evaluate |
 |-----------|--------|-----------------|
-| **Intent match** | 35% | Does the skill's purpose directly match the context profile's `action intent`? Exact match = 35, close match = 20, weak match = 10, no match = 0 |
-| **Domain match** | 30% | How many of the context profile's `domain tags` appear in this skill's description or bucket? Each match adds ~10 points up to 30 |
-| **Keyword overlap** | 20% | How many of the context profile's `keywords` appear (roughly) in the skill name or description? Each match adds ~4 points up to 20 |
-| **Stack match** | 15% | Does the skill explicitly target the detected language/framework? Match = 15, stack-agnostic = 10, mismatch = 0 |
+| **Intent match** | 35% | Does the candidate's purpose directly match the context profile's `action intent`? Exact match = 35, close match = 20, weak match = 10, no match = 0 |
+| **Domain match** | 30% | How many of the context profile's `domain tags` appear in this candidate's description or bucket? Each match adds ~10 points up to 30 |
+| **Keyword overlap** | 20% | How many of the context profile's `keywords` appear (roughly) in the candidate's name or description? Each match adds ~4 points up to 20 |
+| **Stack match** | 15% | Does the candidate explicitly target the detected language/framework? Match = 15, stack-agnostic = 10, mismatch = 0 |
 
-**Thresholds:**
+### MCP-specific scoring notes
+
+The same rubric applies to MCP tools with three small adjustments:
+
+- **Intent match for MCP tools** is decided by the tool-name verb prefix.
+  Map intents to verb sets:
+  - `analyze` ↔ `get`, `list`, `search`, `query`, `read`, `aggregate`
+  - `create` ↔ `create`, `send`, `draft`, `schedule`
+  - `fix` / `investigate` ↔ `get_logs`, `get_*_status`, `trace`, `alert`
+  - `document` ↔ `search_files`, `read_file_content`, `query-docs`
+  - `deploy` ↔ `*_build_*`, `*_app_*` (Jenkins / argocd patterns)
+- **Stack match** is mostly N/A for MCP tools — treat as stack-agnostic (10)
+  unless the tool name explicitly references a stack.
+- **High-risk MCP override** runs after numeric scoring (see below).
+
+**Thresholds (same for both kinds):**
 - **≥ 70** → RECOMMENDED (high confidence — included in the proposed plan)
 - **40–69** → SUGGEST (borderline — presented to user for optional inclusion)
 - **< 40** → Skip silently
 
-**High-risk override:** If a skill appears in the HIGH_RISK_SKILLS registry or matches
-the heuristic above, force it to SUGGEST tier and mark it `[HIGH-RISK]` in the table,
-regardless of its numeric score.
+**High-risk override:** If a Skill appears in the HIGH_RISK_SKILLS registry,
+or an MCP tool matches the HIGH_RISK_MCP_PATTERNS registry, or either
+matches its respective heuristic, force the tier to SUGGEST and mark it
+`[HIGH-RISK]` in the table, regardless of numeric score.
 
-**Constraint: max 5 RECOMMENDED skills per invocation.** If more than 5 score ≥70, take the top 5 by score.
+**Constraints (independent caps):**
+- **Max 5 RECOMMENDED skills** per invocation.
+- **Max 5 RECOMMENDED MCP tools** per invocation.
 
-Print the scoring table (show only skills scoring ≥ 30):
+If more than 5 of either kind score ≥70, take the top 5 by score within
+that kind. The caps are independent so an observability-heavy investigation
+(many high-scoring MCP tools) does not crowd out skill recommendations and
+vice versa.
+
+Print the scoring table (show only candidates scoring ≥ 30). The `Kind`
+column distinguishes skills from MCP tools:
 
 ```
-SKILL SCORING
-─────────────────────────────────────────────────────────────────
-Skill                  Score  Tier             Reason
-─────────────────────── ─────  ──────────────   ─────────────────────
-tdd-workflow           88     RECOMMENDED      intent=create, domain=testing, keyword=test
-security-review        82     RECOMMENDED      intent=fix, domain=security, keyword=auth
-typescript-reviewer    75     RECOMMENDED      stack=typescript, domain=code-quality
-code-review            72     RECOMMENDED      intent=review match
-database-reviewer      55     SUGGEST          domain=database, weak intent match
-ship                   71     SUGGEST [HIGH-RISK]  score≥70 but forced to SUGGEST — deployment skill
-seo                    8      SKIP             no frontend/content signals
-─────────────────────────────────────────────────────────────────
-RECOMMENDED: N skills | SUGGEST: M skills (K high-risk) | SKIP: K skills
+SKILL & MCP SCORING
+─────────────────────────────────────────────────────────────────────────────
+Kind   Name                                  Score  Tier                Reason
+────── ──────────────────────────────────── ─────  ──────────────────  ─────────────────────
+skill  security-review                       88     RECOMMENDED          intent=fix, domain=security, keyword=auth
+skill  investigate                           82     RECOMMENDED          intent=fix, keyword=crash
+mcp    Signoz__search_logs                   84     RECOMMENDED          observability + keyword=logs
+mcp    Signoz__get_firing_alerts             76     RECOMMENDED          observability + fix intent
+skill  typescript-reviewer                   75     RECOMMENDED          stack=typescript
+mcp    Slack__slack_search_public            58     SUGGEST              weak domain match
+skill  ship                                  71     SUGGEST [HIGH-RISK]  score≥70 but forced — deployment skill
+mcp    Slack__slack_send_message             71     SUGGEST [HIGH-RISK]  write tool — forced to SUGGEST
+mcp    Gmail__create_draft                   64     SUGGEST [HIGH-RISK]  write tool — forced to SUGGEST
+seo                                          8      SKIP                 no frontend/content signals
+─────────────────────────────────────────────────────────────────────────────
+RECOMMENDED: N (X skill, Y mcp) | SUGGEST: M (K high-risk) | SKIP: K
 ```
 
 ## Phase 4 — Execution Preview and Mandatory Confirmation
 
-**This phase ALWAYS runs before any skill is invoked.** There are no exceptions.
-Even a single RECOMMENDED skill requires explicit user confirmation.
+**This phase ALWAYS runs before any skill or MCP tool is invoked.** There
+are no exceptions. Even a single RECOMMENDED item requires explicit user
+confirmation.
 
 ### Step 4a — Show the execution plan
 
-Print the full proposed run as a preview. Do not invoke anything yet:
+Print the full proposed run as a preview. Do not invoke anything yet. The
+`Kind` column distinguishes skills (`skill`) from MCP tools (`mcp`):
 
 ```
 EXECUTION PLAN
-──────────────────────────────────────────────────
- #  Skill                Tier        Score  Why
-──  ─────────────────── ──────────  ─────  ─────────────────────────
- 1  security-review      RECOMMENDED 88     fix intent + security domain
- 2  investigate          RECOMMENDED 82     fix intent + keyword=crash
- 3  typescript-reviewer  RECOMMENDED 75     stack=typescript
- 4  code-review          RECOMMENDED 72     review intent match
- 5  ship                 HIGH-RISK   71     deployment — requires confirmation
-──────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────────
+ #  Kind   Name                            Tier         Score  Why
+──  ────── ──────────────────────────────  ───────────  ─────  ────────────────────────
+ 1  skill  security-review                 RECOMMENDED  88     fix intent + security domain
+ 2  skill  investigate                     RECOMMENDED  82     fix intent + keyword=crash
+ 3  mcp    Signoz__search_logs             RECOMMENDED  84     observability + keyword=logs
+ 4  mcp    Signoz__get_firing_alerts       RECOMMENDED  76     observability + fix intent
+ 5  skill  typescript-reviewer             RECOMMENDED  75     stack=typescript
+ 6  mcp    Slack__slack_send_message       HIGH-RISK    71     write tool — requires confirmation
+─────────────────────────────────────────────────────────────────────
 ```
 
 ### Step 4b — Mandatory confirmation gate
 
 Use **AskUserQuestion** for EVERY run. Do not skip this step.
 
-Format the question as follows:
+Format the question as follows. Recommendations are grouped into two
+sub-sections (Skills / MCP Tools) under each header so the user can scan
+each kind separately:
 
-> **autoskill recommends [N] skills for: "[problem statement]"**
+> **autoskill recommends [N] items for: "[problem statement]"**
 >
-> These skills will run **only after you confirm** below:
+> These will run **only after you confirm** below:
 >
-> **Recommended (score ≥70):**
+> **Recommended skills (score ≥70):**
 > - `skill-name` — [reason it applies]
 > - `skill-name` — [reason it applies]
+>
+> **Recommended MCP tools (score ≥70):**
+> - `mcp__server__tool` — [reason it applies]
+> - `mcp__server__tool` — [reason it applies]
 >
 > **Also applicable — want any of these?**
 > - `skill-name` [SUGGEST] — [reason it might apply]
+> - `mcp__server__tool` [SUGGEST] — [reason it might apply]
 > - `skill-name` [HIGH-RISK] — [why it needs confirmation]
+> - `mcp__server__tool` [HIGH-RISK] — [why it needs confirmation]
 >
 > **Actions:**
-> - Type the names of any suggested/high-risk skills you want to add
-> - Type "none" to run only the recommended skills
+> - Type the names of any suggested/high-risk items you want to add
+> - Type "none" to run only the recommended items
 > - Type "cancel" to stop and do nothing
 
-If the user replies "cancel" or selects no skills and there are no recommended
-skills, abort and report BLOCKED.
+Omit any sub-section that has no entries (e.g. if there are no MCP
+recommendations, skip the "Recommended MCP tools" header entirely).
 
-Add any user-selected skills to the execution queue before continuing.
+If the user replies "cancel" or selects nothing and there are no recommended
+items, abort and report BLOCKED.
 
-## Phase 5 — Skill Execution
+Add any user-selected items to the execution queue before continuing.
 
-**Goal:** Apply each queued skill in order.
+## Phase 5 — Execution (Skills + MCP Tools)
+
+**Goal:** Apply each queued item in order.
 
 **Execution order:**
-1. RECOMMENDED skills sorted by score descending
-2. User-approved SUGGEST / HIGH-RISK skills appended at the end
+1. RECOMMENDED **skills** sorted by score descending
+2. RECOMMENDED **MCP tools** sorted by score descending
+3. User-approved SUGGEST / HIGH-RISK items (skills and MCP tools) appended in selection order
 
-**For each skill in the queue:**
+Skills come before MCP tools because their multi-step output often gives
+subsequent MCP calls better context (e.g. `investigate` may surface the
+exact service name to pass to `Signoz__search_logs`).
+
+**For each item in the queue:**
+
+If `kind == skill`:
 
 1. Print: `→ Applying \`[skill-name]\` (score: [N]) — [one-line reason]`
 2. Invoke: `Skill(skill="[skill-name]", args="[relevant portion of the original problem statement]")`
-3. Wait for the skill to complete before starting the next one
-4. Note the outcome (completed / blocked / needs-context)
+3. Wait for the skill to complete before starting the next one.
+4. Note the outcome (completed / blocked / needs-context).
 
-**If a skill returns BLOCKED or NEEDS_CONTEXT:** note it in the audit table and continue to the next skill. Do not abort the entire queue for one blocked skill.
+If `kind == mcp`:
 
-**If NO skills score ≥40:**
+1. Print: `→ Loading schema for \`[mcp-tool-name]\` …`
+2. Materialize the schema:
+   `ToolSearch(query="select:[mcp-tool-name]", max_results=1)`
+3. Print: `→ Invoking \`[mcp-tool-name]\` (score: [N]) — [one-line reason]`
+4. Synthesize arguments from the context profile:
+   - keywords → search terms / query fields
+   - problem statement → query body / message body
+   - intent + time tone (recent / today / this week) → time-window fields
+5. If the schema requires fields autoskill cannot safely infer (e.g. a
+   specific channel ID, a recipient email, an alert rule ID), fall back to
+   **AskUserQuestion** to collect the missing parameter rather than
+   guessing. Never invent IDs.
+6. Invoke the MCP tool with the synthesized arguments. Wait for completion.
+7. Note the outcome (completed / blocked / needs-context).
+
+Execution is always **sequential** — no parallel MCP calls. Earlier output
+(Signoz logs, Jenkins build status, Drive search results) may inform the
+next call's arguments.
+
+**If a queued item returns BLOCKED or NEEDS_CONTEXT:** note it in the audit
+table and continue to the next item. Do not abort the entire queue for one
+blocked item.
+
+**If NO skills AND no MCP tools score ≥40:**
 
 Do not silently do nothing. Instead use AskUserQuestion:
 
-> No skills scored above the applicability threshold for: "[problem statement]"
+> No skills or MCP tools scored above the applicability threshold for: "[problem statement]"
 >
-> This usually means the request is best handled directly (not via a specialized skill),
+> This usually means the request is best handled directly (not via a specialized skill or MCP tool),
 > or the problem description needs more context.
 >
 > Options:
-> A) Let me handle this directly without a skill
+> A) Let me handle this directly without a skill or MCP tool
 > B) Tell me more about what you need (I'll re-score)
-> C) Show me all available skills so I can pick manually
+> C) Show me all available skills and MCP tools so I can pick manually
 
 ## Phase 6 — Decision Audit Report
 
-After all skills have run (or been skipped), print the final report:
+After all items have run (or been skipped), print the final report. The
+`Kind` column distinguishes skills (`skill`) from MCP tools (`mcp`):
 
 ```markdown
 ## autoskill Run Complete
@@ -295,15 +476,17 @@ After all skills have run (or been skipped), print the final report:
 **Problem:** [problem statement]
 **Intent:** [action intent] | **Stack:** [stack] | **Domains:** [domains]
 
-| Skill | Score | Tier | Applied | Outcome | Reason |
-|-------|-------|------|---------|---------|--------|
-| tdd-workflow | 88 | RECOMMENDED | ✅ | completed | create intent + testing domain |
-| security-review | 82 | RECOMMENDED | ✅ | completed | fix intent + security domain |
-| ship | 71 | HIGH-RISK | ⏸ User | skipped | user declined |
-| database-reviewer | 55 | SUGGEST | ⏸ User | completed | user approved |
-| seo | 8 | SKIP | ❌ | — | no frontend signals |
+| Kind  | Name                        | Score | Tier        | Applied | Outcome   | Reason |
+|-------|-----------------------------|-------|-------------|---------|-----------|--------|
+| skill | security-review             | 88    | RECOMMENDED | ✅      | completed | fix intent + security domain |
+| skill | investigate                 | 82    | RECOMMENDED | ✅      | completed | fix intent + keyword=crash |
+| mcp   | Signoz__search_logs         | 84    | RECOMMENDED | ✅      | completed | observability + keyword=logs |
+| mcp   | Signoz__get_firing_alerts   | 76    | RECOMMENDED | ✅      | completed | observability + fix intent |
+| mcp   | Slack__slack_send_message   | 71    | HIGH-RISK   | ⏸ User | skipped   | user declined |
+| skill | database-reviewer           | 55    | SUGGEST     | ⏸ User | completed | user approved |
+| skill | seo                         | 8     | SKIP        | ❌      | —         | no frontend signals |
 
-**Summary:** [N] skills applied, [M] skipped, [K] blocked.
+**Summary:** [N] items applied ([X] skill, [Y] mcp), [M] skipped, [K] blocked.
 ```
 
 ## Completion Status Protocol
@@ -318,21 +501,32 @@ Report final status as one of:
 
 - **Never bulk-read skill files.** The system-reminder list is sufficient for scoring. Only read a specific SKILL.md file if you need to understand invocation details for an edge case.
 - **Never hardcode skill assumptions.** Always derive the candidate list from the live system-reminder. New skills added to the system are automatically included.
-- **Mandatory confirmation for every run.** No skill is ever invoked without the user first seeing the execution plan and explicitly confirming or selecting which skills to run. There are no single-skip exceptions.
-- **High-risk skills always require individual confirmation.** Skills that deploy, send messages, modify data, charge accounts, or access broad shell/file scope are never automatically included — they are always presented as optional and marked `[HIGH-RISK]`.
-- **Heuristic + registry for high-risk detection.** The fixed HIGH_RISK_SKILLS list is supplemented by a keyword heuristic so newly added skills with dangerous descriptions are caught even if the registry has not been updated.
-- **Show the plan before executing.** The execution preview in Phase 4 ensures the user always sees what will run before any skill is invoked.
-- **Graceful degradation.** If the Skill tool is unavailable, print the scored table and explain which skills the user should invoke manually.
-- **Max 5 recommended skills.** Prevents runaway chaining on broad problem statements.
-- **Sequential execution.** Skills run one at a time, in score order. Never parallel — each skill may change project state that the next skill depends on.
+- **Mandatory confirmation for every run.** No skill or MCP tool is ever invoked without the user first seeing the execution plan and explicitly confirming or selecting which items to run. There are no single-skip exceptions.
+- **High-risk items always require individual confirmation.** Skills and MCP tools that deploy, send messages, modify data, charge accounts, authenticate against external providers, or access broad shell/file scope are never automatically included — they are always presented as optional and marked `[HIGH-RISK]`.
+- **Heuristic + registry for high-risk detection.** The fixed HIGH_RISK_SKILLS and HIGH_RISK_MCP_PATTERNS lists are each supplemented by a verb heuristic so newly added skills or tools with dangerous behavior are caught even if the registries have not been updated.
+- **MCP tools are inventoried from the deferred-tools system-reminder only.** No discovery probes via `ToolSearch` during inventory or scoring — MCP schemas load on demand in Phase 5, just before invocation.
+- **High-risk MCP gate.** Any MCP tool whose verb implies a write / send / auth side effect is forced to SUGGEST tier regardless of score, mirroring the skill registry behavior.
+- **Show the plan before executing.** The execution preview in Phase 4 ensures the user always sees what will run before any skill or MCP tool is invoked.
+- **Graceful degradation.** If the Skill tool or `ToolSearch` is unavailable, print the scored table and explain which items the user should invoke manually.
+- **Independent caps.** Max 5 recommended skills AND max 5 recommended MCP tools per invocation. Prevents runaway chaining on broad problem statements and prevents one kind from crowding out the other.
+- **Sequential execution.** Skills and MCP tools run one at a time, in queue order. Never parallel — earlier output may change project or remote state that later items depend on.
 
 ## Safety Notice
 
-`autoskill` is a meta-skill that recommends and routes to other skills. It does not
-perform any file modifications, deployments, or external communications itself.
-However, the skills it recommends may do so. Because of this:
+`autoskill` is a meta-skill that recommends and routes to other skills **and
+MCP tools**. It does not itself perform file modifications, deployments, or
+external communications. However, the items it recommends may do so.
+Because of this:
 
 1. **Always review the execution plan** before confirming.
-2. **Remove any skill you do not want** by selecting only the ones you trust.
-3. **Be especially cautious with [HIGH-RISK] skills** — they are marked for a reason.
+2. **Remove any item you do not want** by selecting only the ones you trust.
+3. **Be especially cautious with [HIGH-RISK] items** — they are marked for a reason.
 4. **If you are unsure, choose "cancel"** — autoskill will stop and you can proceed manually.
+
+**MCP tools deserve extra care.** Many MCP tools have external side effects:
+sending Slack messages, creating Gmail drafts or labels, creating or
+modifying calendar events, uploading to Drive, resetting rate limits,
+authenticating against third-party providers, or mutating remote state in
+Supabase / Vercel / HubSpot / Atlassian / etc. The same mandatory
+confirmation gate applies — these tools are never auto-included and always
+appear as `[HIGH-RISK]` suggestions, regardless of their numeric score.
